@@ -162,7 +162,7 @@ export async function reorderMembers(req, res, next) {
     const { mode = 'random' } = req.body; // 'alphabetical' o 'random'
 
     const [members] = await connection.query(
-      'SELECT * FROM team_members WHERE team_id = ?',
+      'SELECT * FROM team_members WHERE team_id = ? ORDER BY sort_order ASC',
       [teamId]
     );
 
@@ -170,22 +170,46 @@ export async function reorderMembers(req, res, next) {
       return res.json({ success: true, data: [], message: 'No hay miembros para ordenar' });
     }
 
-    let orderedList = [...members];
+    // Regla de Negocio: Si se reordena a media reunión, SOLO se reordenan los miembros pendientes ('pending').
+    // Los miembros ya completados ('completed') u omitidos ('skipped') preservan su orden previo.
+    const finishedMembers = members.filter((m) => m.status !== 'pending');
+    const pendingMembers = members.filter((m) => m.status === 'pending');
 
-    if (mode === 'alphabetical') {
-      orderedList.sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
-    } else {
-      // Fisher-Yates shuffle
-      for (let i = orderedList.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [orderedList[i], orderedList[j]] = [orderedList[j], orderedList[i]];
+    let orderedPending = [...pendingMembers];
+    if (orderedPending.length > 0) {
+      if (mode === 'alphabetical') {
+        orderedPending.sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+      } else {
+        // Fisher-Yates shuffle para pendientes
+        for (let i = orderedPending.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [orderedPending[i], orderedPending[j]] = [orderedPending[j], orderedPending[i]];
+        }
       }
+    }
+
+    let finalOrderedList = [];
+    if (pendingMembers.length > 0) {
+      // Los ya presentados/omitidos se quedan en sus puestos, los pendientes se reordenan a continuación
+      finalOrderedList = [...finishedMembers, ...orderedPending];
+    } else {
+      // Si todos ya están completados u omitidos, se reordena toda la lista según el modo
+      let allShuffled = [...members];
+      if (mode === 'alphabetical') {
+        allShuffled.sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
+      } else {
+        for (let i = allShuffled.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [allShuffled[i], allShuffled[j]] = [allShuffled[j], allShuffled[i]];
+        }
+      }
+      finalOrderedList = allShuffled;
     }
 
     await connection.beginTransaction();
 
-    for (let index = 0; index < orderedList.length; index++) {
-      const member = orderedList[index];
+    for (let index = 0; index < finalOrderedList.length; index++) {
+      const member = finalOrderedList[index];
       await connection.query(
         'UPDATE team_members SET sort_order = ? WHERE id = ?',
         [index + 1, member.id]
